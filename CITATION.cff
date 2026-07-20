@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+message: >-
+  Si utilizas este software o el framework X-Opt Oracle en tu
+  investigación, por favor cítalo usando la información de este archivo.
+title: "X-Opt Oracle: framework supervisor XAI-contrafactual para el ajuste dinámico de parámetros en optimización global"
+type: software
+authors:
+  - family-names: Olivares
+    given-names: Pablo
+    affiliation: "Escuela de Ingeniería Informática, Universidad de Valparaíso, Chile"
+    email: pablo.olivareszu@uv.cl
+  - family-names: Olivares
+    given-names: Rodrigo
+    affiliation: "Escuela de Ingeniería Informática, Universidad de Valparaíso, Chile"
+version: "1.0.0"
+date-released: "2026-07-19"
+license: MIT
+repository-code: "https://github.com/pabloolivareszu-oss/opt-x-xai.git"  #
+keywords:
+  - optimización global
+  - metaheurísticas
+  - XAI
+  - explicabilidad
+  - contrafactuales
+  - control paramétrico
+  - estancamiento
+preferred-citation:
+  type: thesis
+  title: "Marco de trabajo para aproximación de parámetros basado en modelos agnósticos explicables para algoritmos de Optimización Global"
+  authors:
+    - family-names: Olivares
+      given-names: Pablo
+    - family-names: Olivares
+      given-names: Rodrigo
+  institution:
+    name: "Universidad de Valparaíso"
+  year: 2026
