@@ -1,1039 +1,507 @@
 # X-Opt Oracle
 
-**An XAI-counterfactual supervisory framework for dynamic parameter control in global optimization algorithms**
+**Marco de trabajo supervisor XAI-contrafactual para el ajuste dinámico de parámetros en algoritmos de optimización global.**
 
-Pablo Olivares and Rodrigo Olivares  
-School of Computer Engineering, Universidad de Valparaíso, Chile
-
----
-
-## Overview
-
-Population-based metaheuristics may stagnate in local optima without mechanisms that explain why the search has stopped improving or how it should recover. **X-Opt Oracle** is a decoupled supervisory layer that monitors a host optimizer and activates only when a stagnation condition is detected.
-
-Each valid activation performs four steps:
-
-1. It builds a **budget-aware empirical oracle** from short, retrospective search probes.
-2. It estimates the contribution of the host's **actionable parameters** using SHAP, LIME, ACME, or iBreakdown.
-3. It synthesizes a **deterministic counterfactual configuration**.
-4. It applies the configuration and audits the subsequent behavior as rescue, neutrality, or interference.
-
-Every real objective-function evaluation is charged to the same strict evaluation budget. The explanatory stage therefore does not receive hidden evaluations or an auxiliary optimization budget.
-
-The main finding is that XAI-CF assistance is **selective rather than universal**. Its usefulness depends on the parameter plasticity of the host optimizer and on the dominant difficulty of the search landscape. SBOA, GSK, and BA form the receptive core; L-SHADE and jSO tend to damp external intervention through their self-adaptive mechanisms; PSO is mostly neutral; and GWO and OPA help delimit the region in which intervention becomes unstable or adverse. Among receptive hosts, ACME-CF achieves the best overall explanatory ranking.
-
-The framework is evaluated on the IEEE CEC 2022 benchmark and transferred to an applied electric-vehicle charging-hub planning problem.
+Pablo Olivares, Rodrigo Olivares — Escuela de Ingeniería Informática, Universidad de Valparaíso, Chile.
 
 ---
 
-## Main contributions
+## Resumen
 
-- Explainability is used as an **operational closed-loop control mechanism**, not only as post-hoc visualization.
-- A single framework evaluates eight host optimizers and four XAI-CF explainers under identical accounting rules.
-- A strict function-evaluation ledger makes every explanatory evaluation explicit and auditable.
-- A budget-availability gate prevents incomplete or unpaid explanatory activations.
-- A deterministic counterfactual rule converts parameter importance into a bounded intervention without launching a second optimization process.
-- The experiments characterize an empirical **applicability frontier**: rescue, neutrality, and interference.
+Las metaheurísticas poblacionales suelen estancarse en óptimos locales sin mecanismos que expliquen por qué ocurre ni que orienten su recuperación. **X-Opt Oracle** es una capa supervisora desacoplada que monitorea al algoritmo anfitrión y, ante una señal de estancamiento, ejecuta una secuencia diagnóstica-prescriptiva:
 
----
+1. Construye un **oráculo empírico pagado** $\mathcal{M}(\Theta)$ que re-simula horizontes cortos de búsqueda, cargando cada evaluación al mismo presupuesto global.
+2. Estima la **importancia de los parámetros accionables** mediante un explicador XAI intercambiable (SHAP, LIME, ACME o iBreakdown).
+3. Sintetiza una **reconfiguración contrafactual determinista** y la aplica como override persistente.
+4. **Audita** el efecto posterior (rescate, neutralidad o interferencia).
 
-## Framework architecture
+Todo el proceso opera bajo un **ledger estricto de evaluaciones** con pre-reserva presupuestaria: ninguna mejora proviene de evaluaciones ocultas.
 
-X-Opt Oracle is organized as a modular supervisory layer around an unchanged host optimizer.
-
-### Core components
-
-- **Host optimizer**: executes the native population-based search.
-- **Telemetry module**: records fitness, diversity, parameters, and function-evaluation consumption.
-- **Stagnation monitor**: detects a sustained lack of significant progress.
-- **FE Availability Gate**: verifies that the remaining budget can pay for a complete explanatory activation.
-- **Empirical oracle**: evaluates candidate parameter configurations through short retrospective probes.
-- **XAI explainer**: estimates the local contribution of actionable parameters.
-- **Counterfactual generator**: produces a deterministic feasible reconfiguration.
-- **Intervention adapter**: injects the configuration into the host.
-- **Post-hoc auditor**: classifies the observed outcome.
+El hallazgo central es que la asistencia XAI-CF **no produce mejoras universales, sino beneficios selectivos** determinados por la *plasticidad paramétrica* del anfitrión: SBOA, GSK y BA son receptivos; los mecanismos auto-adaptativos de L-SHADE y jSO amortiguan la intervención; PSO permanece neutro; GWO y OPA delimitan la zona de interferencia. ACME-CF es el explicador con mejor rango global entre los anfitriones receptivos. En el traslado aplicado (planificación de un hub de carga de vehículos eléctricos), GSK–ACME-CF supera estadísticamente a Standard en los diez escenarios evaluados, con mejoras de magnitud moderada.
 
 ---
 
-## Mathematical formulation
+## Contribuciones
 
-### Global optimization problem
-
-The continuous global optimization problem is
-
-$$
-\min_{x\in\Omega} f(x),
-$$
-
-with
-
-$$
-\Omega=\prod_{j=1}^{D}[L_j,U_j].
-$$
-
-Here, $x$ is a $D$-dimensional decision vector and $[L_j,U_j]$ defines the feasible interval of the $j$-th decision variable.
+- La explicabilidad deja de ser inspección post-hoc y se convierte en **componente operativo de control de lazo cerrado**.
+- Arquitectura **agnóstica al explicador y al anfitrión**: 8 metaheurísticas × 4 explicadores bajo la misma contabilidad.
+- **Auditabilidad formal**: ledger con invariante de suma exacta (Proposición 1) y cota de actividad del oráculo (Proposición 2).
+- Caracterización empírica de la **frontera de aplicabilidad**: cuándo la intervención rescata, cuándo es neutra y cuándo interfiere.
 
 ---
 
-### Stagnation trigger
+## Matemáticas del oráculo
 
-Let $\tau^\star(t)$ be the most recent evaluation at which the host optimizer produced a relative improvement greater than the threshold $\delta$.
+### Problema y estancamiento
 
-The stagnation indicator is
+Optimización global continua sobre $\Omega = \prod_{j=1}^{D}[L_j, U_j]$:
+
+$$\min_{x \in \Omega} f(x)$$
+
+Sea $\tau^\star(t)$ la última evaluación con mejora relativa del incumbente superior a $\delta = 10^{-8}$ (considerando solo evaluaciones del optimizador). El disparador de estancamiento es:
 
 $$
-I_{\mathrm{stag}}(t)=
+I_{stag}(t) =
 \begin{cases}
-1, & t-\tau^\star(t)\ge W_{\mathrm{trig}}
-     \ \land\ t\ge t_{\mathrm{cd}},\\
-0, & \text{otherwise}.
+1 & \text{si } t - \tau^\star(t) \ge W_{trig} \ \wedge \ t \ge t_{cd} \\
+0 & \text{en otro caso}
 \end{cases}
+\qquad W_{trig} = \lceil 0{,}02 \cdot MaxFEs \rceil
 $$
 
-The trigger window is
+con cooldown $W_{cd} = \lceil 0{,}01 \cdot MaxFEs \rceil$ tras intervenir ($W_{cd}/3$ tras un intento bloqueado). La diversidad poblacional se registra como telemetría:
 
-$$
-W_{\mathrm{trig}}
-=
-\left\lceil
-0.02\,\mathrm{MaxFEs}
-\right\rceil.
-$$
-
-After an accepted intervention, the cooldown is
-
-$$
-W_{\mathrm{cd}}
-=
-\left\lceil
-0.01\,\mathrm{MaxFEs}
-\right\rceil.
-$$
-
-A budget-blocked attempt applies a reduced cooldown of $W_{\mathrm{cd}}/3$.
-
-The experiments use
-
-$$
-\delta=10^{-8}.
-$$
-
-Population diversity is retained as telemetry:
-
-$$
-\sigma^2(P_t)
-=
-\frac{1}{ND}
-\sum_{i=1}^{N}
-\sum_{j=1}^{D}
-\left(x_{i,j}-\bar{x}_j\right)^2.
-$$
-
-Diversity is used to interpret the search dynamics and the effect of intervention. The operational trigger is based on significant progress of the host optimizer.
-
----
-
-### Strict function-evaluation ledger
-
-Every real objective-function evaluation belongs to exactly one category:
-
-$$
-FE^{\mathrm{tot}}(t)
-=
-FE^{\mathrm{opt}}(t)
-+
-FE^{\mathrm{exp}}(t)
-+
-FE^{\mathrm{dir}}(t)
-+
-FE^{\mathrm{cf}}(t).
-$$
-
-The global invariant is
-
-$$
-FE^{\mathrm{tot}}(t)
-\le
-\mathrm{MaxFEs}.
-$$
-
-The categories are:
-
-- $FE^{\mathrm{opt}}$: evaluations performed by the native host search.
-- $FE^{\mathrm{exp}}$: evaluations performed by the empirical explanatory oracle.
-- $FE^{\mathrm{dir}}$: optional evaluations used to infer an intervention direction.
-- $FE^{\mathrm{cf}}$: optional evaluations used to validate a counterfactual configuration.
-
-In the evaluated implementation,
-
-$$
-FE^{\mathrm{dir}}=0
-\qquad\text{and}\qquad
-FE^{\mathrm{cf}}=0.
-$$
-
-The intervention direction is inferred from the execution history, and the deterministic counterfactual is applied without additional validation evaluations.
-
-**Proposition 1 — Budget safety.**  
-Under the strict ledger and the availability pre-reservation rule, every run satisfies the global evaluation budget. At the end of each run, an assertion verifies that the category totals exactly match the global counter.
-
----
-
-### FE Availability Gate
-
-Before activating explainer $v$ over $m$ actionable parameters, the framework reserves the worst-case cost of the activation:
-
-$$
-\mathrm{MaxFEs}-FE^{\mathrm{tot}}(t)
-\ge
-R_v(m).
-$$
-
-The required reservation is
-
-$$
-R_v(m)=Q_v(m)\,P,
-$$
-
-where:
-
-- $Q_v(m)$ is the maximum number of empirical-oracle queries allowed for explainer $v$.
-- $P$ is the worst-case function-evaluation cost of one empirical-oracle query.
-
-When the remaining budget is smaller than $R_v(m)$, the activation is skipped and no explanatory evaluations are consumed.
-
----
-
-### Budget-aware empirical oracle
-
-For a candidate parameter configuration $\Theta$, the empirical oracle re-simulates a short search horizon over retrospective anchors and reports the median best value:
-
-$$
-\mathcal{M}(\Theta)
-=
-\mathrm{median}_{\substack{
-k=1,\ldots,K\\
-r=1,\ldots,R_p
-}}
-J\!\left(
-\mathcal{A},
-\Theta,
-I_p;
-A_k,
-\zeta_{k,r}
-\right).
-$$
-
-The notation is:
-
-- $\mathcal{A}$: host optimizer.
-- $\Theta$: candidate parameter configuration.
-- $I_p$: number of probe iterations.
-- $A_k$: retrospective population anchor.
-- $\zeta_{k,r}$: random seed used in probe repetition $r$.
-
-The cost of one empirical-oracle query is
-
-$$
-P
-=
-\sum_{k=1}^{K}
-\lvert A_k\rvert
-I_p
-R_p.
-$$
-
-The upper bound is
-
-$$
-P
-\le
-KCI_pR_p,
-$$
-
-where $C$ is the maximum number of individuals retained per anchor.
-
-For the evaluated configuration,
-
-$$
-K=3,\qquad
-C=20,\qquad
-I_p=1,\qquad
-R_p=1,
-$$
-
-and therefore
-
-$$
-P\le60
-$$
-
-function evaluations per empirical-oracle query.
-
-The predictor is memoized. Repeated candidate configurations within the same activation are not evaluated twice.
-
----
-
-### Common Random Numbers
-
-Candidate parameter configurations are compared using the same probe seeds. This induces positive covariance and reduces the variance of pairwise differences:
-
-$$
-\mathrm{Var}
-\left[
-\mathcal{M}(\Theta)-\mathcal{M}(\Theta')
-\right]
-=
-\mathrm{Var}
-\left[
-\mathcal{M}(\Theta)
-\right]
-+
-\mathrm{Var}
-\left[
-\mathcal{M}(\Theta')
-\right]
--
-2\,
-\mathrm{Cov}
-\left[
-\mathcal{M}(\Theta),
-\mathcal{M}(\Theta')
-\right].
-$$
-
-This design improves local discrimination under a limited explanatory budget.
-
----
-
-## XAI-CF explainers
-
-All explainers operate on the same empirical oracle and produce a contribution vector
-
-$$
-\bar{\Phi}
-=
-\left\{
-\phi_1,\ldots,\phi_m
-\right\}.
-$$
-
-To avoid GitHub rendering failures, the equations are presented outside Markdown tables.
-
-### SHAP-CF
-
-SHAP estimates the marginal contribution of actionable parameter $j$:
-
-$$
-\phi_j^{\mathrm{SHAP}}
-=
-\sum_{S\subseteq F\setminus\{j\}}
-\frac{
-\lvert S\rvert!
-\left(
-m-\lvert S\rvert-1
-\right)!
-}{
-m!
-}
-\left[
-\mathcal{M}(S\cup\{j\})
--
-\mathcal{M}(S)
-\right].
-$$
-
-Its query bound is
-
-$$
-Q_{\mathrm{SHAP}}(m)
-=
-\left\lfloor
-\frac{Q_{\mathrm{shap}}}{m+1}
-\right\rfloor
-(m+1).
-$$
-
----
-
-### LIME-CF
-
-LIME fits a locally weighted interpretable surrogate:
-
-$$
-g^\star
-=
-\arg\min_{g}
-\left[
-\sum_{z}
-\pi_{\Theta}(z)
-\left(
-\mathcal{M}(z)-g(z)
-\right)^2
-+
-\Omega(g)
-\right].
-$$
-
-Its query bound is
-
-$$
-Q_{\mathrm{LIME}}(m)
-=
-\max
-\left(
-m+2,
-Q_{\mathrm{lime}}
-\right).
-$$
-
----
-
-### ACME-CF
-
-ACME estimates a controlled effect along anchored trajectories:
-
-$$
-\phi_j^{\mathrm{ACME}}
-=
-\frac{1}{K}
-\sum_{k=1}^{K}
-\frac{
-\left|
-\mathcal{M}
-\left(
-\Theta_{-j},
-\theta_j+\Delta_j;
-A_k
-\right)
--
-\mathcal{M}
-\left(
-\Theta;
-A_k
-\right)
-\right|
-}{
-\left|
-\Delta_j
-\right|
-+
-\varepsilon
-}.
-$$
-
-Its query bound is
-
-$$
-Q_{\mathrm{ACME}}(m)
-=
-1+gm.
-$$
-
----
-
-### iBreakdown-CF
-
-iBreakdown decomposes the empirical prediction sequentially:
-
-$$
-\phi_{\pi_j}^{\mathrm{iBD}}
-=
-\mathcal{M}
-\left(
-\Theta_{S_j}
-\right)
--
-\mathcal{M}
-\left(
-\Theta_{S_{j-1}}
-\right).
-$$
-
-Its query bound is
-
-$$
-Q_{\mathrm{iBD}}(m)
-=
-1
-+
-m'
-+
-\min
-\left(
-\pi,
-\frac{m'(m'-1)}{2}
-\right),
-$$
-
-with
-
-$$
-m'=\min(m,6).
-$$
-
----
-
-### Explanatory-budget hyperparameters
-
-The evaluated values are
-
-$$
-Q_{\mathrm{shap}}=16,
-\qquad
-Q_{\mathrm{lime}}=12,
-\qquad
-g=3,
-\qquad
-\pi=4.
-$$
-
-The worst-case cost per activation is 1,140 function evaluations for BA with ACME-CF.
-
-This corresponds to:
-
-- 0.57% of the total budget for $D=10$.
-- 0.114% of the total budget for $D=20$.
-
----
-
-## Deterministic counterfactual synthesis
-
-A classical feasible counterfactual problem can be written as
-
-$$
-\Theta^{\mathrm{cf}}
-=
-\arg\min_{\Theta'\in\Omega_\Theta}
-\left[
-\mathcal{M}(\Theta')
-+
-\lambda
-\left\|
-\Theta'-\Theta_t
-\right\|_1
-\right].
-$$
-
-X-Opt does not solve this nested optimization problem. Instead, it uses the following deterministic prescription:
-
-$$
-\theta_j^{\mathrm{cf}}
-=
-\Pi_{[L_j,U_j]}
-\left[
-\theta_j
-+
-d_j
-S
-\frac{
-\left|
-\phi_j
-\right|
-}{
-\sum_{k=1}^{m}
-\left|
-\phi_k
-\right|
-+
-\varepsilon
-}
-\left(
-U_j-L_j
-\right)
-\right].
-$$
-
-Here:
-
-- $\Pi_{[L_j,U_j]}$ projects the result onto the feasible parameter interval.
-- $d_j$ belongs to $\{-1,+1\}$ and represents the preferred direction.
-- $S$ is the maximum intervention intensity.
-- $\varepsilon$ prevents division by zero.
-
-The evaluated intensity is
-
-$$
-S=0.1.
-$$
-
-> The explainer determines **which parameters should move**.  
-> The counterfactual rule determines **how far and in which direction**.
-
----
-
-## Oracle activity and computational complexity
-
-**Proposition 2 — Oracle activity bound.**  
-The number of accepted activations per run satisfies
-
-$$
-A
-\le
-\left\lceil
-\frac{
-\mathrm{MaxFEs}
-}{
-W_{\mathrm{cd}}
-}
-\right\rceil.
-$$
-
-With
-
-$$
-W_{\mathrm{cd}}
-=
-0.01\,\mathrm{MaxFEs},
-$$
-
-the loose theoretical bound is
-
-$$
-A\le100.
-$$
-
-The explanatory-budget fraction satisfies
-
-$$
-\frac{
-FE^{\mathrm{exp}}
-}{
-\mathrm{MaxFEs}
-}
-\le
-\frac{
-A
-\max_v
-R_v(m)
-}{
-\mathrm{MaxFEs}
-}.
-$$
-
-The total time complexity can be expressed as
-
-$$
-T
-=
-O
-\left(
-\mathrm{MaxFEs}
-\left(
-D+c_f
-\right)
-\right)
-\left[
-1
-+
-O
-\left(
-\frac{
-A R_v(m)
-}{
-\mathrm{MaxFEs}
-}
-\right)
-\right].
-$$
-
-The supervisory layer does not change the asymptotic complexity class of the host optimizer. It introduces a bounded multiplicative factor.
-
-The supervisor stores a fixed buffer of population snapshots:
-
-$$
-O(BND),
-$$
-
-with $B=64$. Up to constant factors, the memory order remains $O(ND)$.
-
----
-
-## Complete pseudocode
-
-```text
-INPUT:
-    host optimizer A
-    objective function f
-    evaluation budget MaxFEs
-    explainer v in {SHAP, LIME, ACME, iBreakdown}
-    actionable parameter vector Theta
-    feasible parameter bounds [L, U]
-
-INITIALIZE:
-    host population P
-    host fitness values F
-    baseline parameters Theta_0
-
-    ledger:
-        FE_opt = 0
-        FE_exp = 0
-        FE_dir = 0
-        FE_cf  = 0
-        FE_tot = 0
-
-    retrospective history W_hist
-    successful-configuration history H
-    cooldown endpoint t_cd = 0
-    pending post-hoc audits = empty
-
-WHILE FE_tot < MaxFEs:
-
-    IF official target has been reached:
-        record TargetReached
-        BREAK
-
-    update stagnation state using host-only progress
-
-    IF stagnation is active AND variant is not Standard:
-
-        anchors = select retrospective anchors from W_hist
-        required_budget = query_bound(v, m) * probe_cost(anchors)
-
-        IF remaining_budget < required_budget:
-            record SkippedByAvailability
-            set reduced cooldown
-        ELSE:
-            Phi = explain empirical_oracle using v
-            direction = infer_direction(H)
-            Theta_cf = deterministic_counterfactual(
-                Theta_current,
-                Phi,
-                direction,
-                bounds
-            )
-
-            apply Theta_cf through the host adapter
-            set normal cooldown
-
-            record:
-                explanatory evaluations
-                importance vector
-                previous parameters
-                counterfactual parameters
-                current diversity
-
-            schedule a post-hoc audit
+$$\sigma^2(P_t) = \frac{1}{N \cdot D} \sum_{i=1}^{N} \sum_{j=1}^{D} (x_{i,j} - \bar{x}_j)^2$$
 
-    execute one native generation of the host optimizer
+### Ledger estricto y gate de disponibilidad
 
-    FOR each objective-function evaluation:
-        charge one unit to FE_opt
-        charge one unit to FE_tot
+Toda evaluación real se imputa a una de cuatro categorías:
 
-    update:
-        population
-        fitness
-        incumbent
-        active parameters
-        diversity
-        retrospective history
+$$FE^{tot}(t) = FE^{opt}(t) + FE^{exp}(t) + FE^{dir}(t) + FE^{cf}(t) \le MaxFEs$$
 
-    execute due post-hoc audits
+(en la implementación evaluada $FE^{dir} = FE^{cf} = 0$; la dirección se infiere sin coste desde el historial). Antes de activar el explicador $v$ sobre $m$ parámetros, el gate exige la pre-reserva:
 
-    IF a counterfactual override is active:
+$$MaxFEs - FE^{tot}(t) \ \ge\ R_v(m) = Q_v(m) \cdot P$$
 
-        IF host is L-SHADE or jSO:
-            preserve native memories and archive
-            inject only compatible active parameters
-            allow the host to update its memories
-            through its native success-history policy
-        ELSE:
-            keep the direct parameter override active
-            until a new intervention, target attainment,
-            or budget exhaustion
+**Proposición 1 (seguridad presupuestaria).** Bajo el ledger con pre-reserva, toda corrida satisface $FE^{tot} \le MaxFEs$ y la suma de categorías coincide exactamente con $FE^{tot}$ (verificado con aserción al cierre de cada corrida).
 
-ASSERT:
-    FE_opt + FE_exp + FE_dir + FE_cf == FE_tot
-    FE_tot <= MaxFEs
+### Oráculo empírico pagado
 
-RETURN:
-    best solution
-    final ledger
-    intervention records
-    post-hoc audit records
-```
+Dada una configuración candidata $\Theta$, el oráculo re-simula $I_p$ iteraciones del anfitrión sobre $K$ anclas retrospectivas $\{A_k\}$ y reporta la mediana del mejor valor alcanzado:
 
----
+$$\mathcal{M}(\Theta) = \underset{k=1..K,\ r=1..R_p}{\mathrm{med}} \ J(\mathcal{A}, \Theta, I_p;\ A_k, \zeta_{k,r})$$
 
-## Experimental protocol
+Coste por consulta: $P = \sum_k |A_k| \cdot I_p \cdot R_p \le K \cdot C \cdot I_p \cdot R_p$. Con $K=3$, $C=20$, $I_p = R_p = 1$: **$P \le 60$ FEs por consulta**. Las semillas $\zeta_{k,r}$ se fijan entre candidatos (*Common Random Numbers*), reduciendo la varianza de las comparaciones:
 
-| Element | Configuration |
-|---|---|
-| Benchmark | IEEE CEC 2022, functions F1 to F12 |
-| Dimensions | 10 and 20 |
-| Evaluation budget for D = 10 | 200,000 FEs |
-| Evaluation budget for D = 20 | 1,000,000 FEs |
-| Independent runs | 30 per algorithm-variant-function-dimension cell |
-| Seed design | Paired seeds through Common Random Numbers |
-| Host optimizers | PSO, BA, GWO, L-SHADE, jSO, GSK, OPA, SBOA |
-| Variants | Standard, SHAP-CF, LIME-CF, ACME-CF, iBreakdown-CF |
-| Primary metric | Absolute final error |
-| Success threshold | 1e-8 |
-| Statistical tests | Paired Wilcoxon, Holm correction, Friedman test |
-| Counterfactuals per activation | 1 |
-| Intervention intensity | 0.1 |
+$$\mathrm{Var}(\mathcal{M}(\Theta) - \mathcal{M}(\Theta')) = \mathrm{Var}(\mathcal{M}(\Theta)) + \mathrm{Var}(\mathcal{M}(\Theta')) - 2\,\mathrm{Cov}(\mathcal{M}(\Theta), \mathcal{M}(\Theta'))$$
 
----
+El predictor está memoizado: consultas repetidas no se recargan.
 
-## Actionable parameters by host
+### Estimación de importancia (explicadores XAI-CF)
 
-The implementation in `scripts/engines.py` is the source of truth.
+Los cuatro explicadores operan sobre el mismo $\mathcal{M}$ y producen $\bar{\Phi} = \{\phi_1, \dots, \phi_m\}$:
 
-| Host | Actionable parameters | Coupling mechanism |
+| Explicador | Forma | Cota de consultas $Q_v(m)$ |
 |---|---|---|
-| PSO | w, c1, c2, vmax | Direct override |
-| BA | fmin, fmax, loudness, pulse rate, alpha, gamma | Direct override |
-| GWO | a-scale and leader weights | Direct override |
-| GSK | KF and KR | Direct override |
-| OPA | drive, encircle, attack, exploration probability | Direct override |
-| SBOA | hunt, escape, exploration probability, local-search weight | Direct override |
-| L-SHADE | F, CR, p-best rate, archive rate | Memory-sensitive coupling |
-| jSO | F, CR, p-best rate, archive rate | Restricted memory-sensitive coupling |
+| SHAP-CF | $\phi_j = \sum_{S \subseteq F \setminus \{j\}} \frac{\|S\|!\,(m-\|S\|-1)!}{m!} [\mathcal{M}(S \cup \{j\}) - \mathcal{M}(S)]$ | $\lfloor Q_{shap}/(m{+}1) \rfloor (m{+}1)$ |
+| LIME-CF | $g^\* = \arg\min_{g} \sum_z \pi_\Theta(z)(\mathcal{M}(z) - g(z))^2 + \Omega(g)$ | $\max(m{+}2, Q_{lime})$ |
+| ACME-CF | $\phi_j = \frac{1}{K}\sum_k \frac{\|\mathcal{M}(\Theta_{-j}, \theta_j + \Delta_j; A_k) - \mathcal{M}(\Theta; A_k)\|}{\|\Delta_j\| + \varepsilon}$ | $1 + g\,m$ |
+| iBreakdown-CF | $\phi_{\pi_j} = \mathcal{M}(\Theta_{S_j}) - \mathcal{M}(\Theta_{S_{j-1}})$ | $1 + m' + \min(\pi, \binom{m'}{2})$ |
 
-For L-SHADE and jSO, the counterfactual intervention does not destructively replace the native success-history memories. It changes compatible active parameters while preserving the host's internal adaptation mechanism.
+Hiperparámetros de penalización: $Q_{shap}=16$, $Q_{lime}=12$, $g=3$, $\pi=4$, $m' = \min(m, 6)$. Peor caso por activación: 1140 FEs (BA con ACME-CF), es decir 0,57 % de $MaxFEs$ en $D=10$ y 0,114 % en $D=20$.
 
----
+### Síntesis contrafactual determinista
 
-## Main benchmark results
+La formulación contrafactual clásica restringida al espacio factible sería:
 
-### Receptivity across CEC 2022
+$$\Theta^{cf} = \arg\min_{\Theta' \in \Omega_\Theta} \left[ \mathcal{M}(\Theta') + \lambda \lVert \Theta' - \Theta_t \rVert_1 \right]$$
 
-The best XAI-CF variant is compared with Standard using a median-improvement threshold of 5%.
+Para evitar esa optimización interna costosa, X-Opt la reemplaza por una prescripción determinista, acotada y sin FEs adicionales:
 
-| Dimension | Improved cells | Neutral cells | Adverse cells |
-|---|---:|---:|---:|
-| D = 10 | 32 | 57 | 7 |
-| D = 20 | 44 | 49 | 3 |
+$$\theta_j^{cf} = \Pi_{[L_j, U_j]}\!\left( \theta_j + d_j \cdot S \cdot \frac{|\phi_j|}{\sum_k |\phi_k|} \cdot (U_j - L_j) \right)$$
 
-The results support the following empirical classification:
+donde $\Pi$ proyecta al intervalo permitido, $d_j \in \{-1, +1\}$ es la dirección (inferida desde configuraciones exitosas recientes, con fallback determinista) y $S = 0{,}1$ la intensidad máxima. **El explicador decide qué mover; el contrafactual decide cuánto y hacia dónde.**
 
-- **Receptive core**: SBOA, GSK, and BA.
-- **Boundary case**: jSO.
-- **Mostly neutral or resistant**: PSO, L-SHADE, and OPA.
-- **Localized interference**: GWO.
+### Cotas de actividad y complejidad
 
-Among receptive hosts, ACME-CF obtains the best global average rank:
+**Proposición 2.** El número de activaciones por corrida satisface $A \le \lceil MaxFEs / W_{cd} \rceil$ (= 100 con $W_{cd} = 0{,}01 \cdot MaxFEs$) y la fracción de presupuesto del oráculo cumple $FE^{exp}/MaxFEs \le A \cdot \max_v R_v(m) / MaxFEs$.
 
-$$
-1.65.
-$$
+Tiempo total de una corrida asistida:
 
-SHAP-CF, LIME-CF, and iBreakdown-CF still dominate specific host-function combinations.
+$$T = O(MaxFEs \cdot (D + c_f)) \cdot \left(1 + O\!\left(\tfrac{A \cdot R_v(m)}{MaxFEs}\right)\right)$$
 
-The observed rescue patterns include:
-
-- displacement of the final-error distribution;
-- reductions in median error and interquartile range;
-- increased probability of reaching the target;
-- renewed convergence after a long plateau;
-- broad error reduction without necessarily reaching the official success threshold.
+La asistencia no altera la clase asintótica del anfitrión; añade un factor multiplicativo acotado. Memoria: buffer de $B = 64$ instantáneas, $O(B \cdot N \cdot D)$; la huella conserva el orden $O(N \cdot D)$ del anfitrión.
 
 ---
 
-## Applied transfer study
-
-The applied study addresses the planning of an electric-vehicle charging hub with:
-
-- 96 decision variables;
-- a 24-hour multiperiod horizon;
-- battery energy storage;
-- diesel generation;
-- grid-import limits;
-- penalized constraint handling;
-- ten operating scenarios.
-
-The penalized objective is
-
-$$
-f_{\mathrm{pen}}
-=
-f
-+
-\rho\,CV,
-$$
-
-with
-
-$$
-\rho=10^6.
-$$
-
-The campaign contains
-
-$$
-10
-\times
-4
-\times
-5
-\times
-30
-=
-6000
-$$
-
-independent executions.
-
-The preregistered comparison between GSK–ACME-CF and Standard is significant after Holm correction in all ten evaluated scenarios.
-
-The paired median gain is 0.310%, with a range from 0.075% to 0.887%.
-
-Outside the primary comparison:
-
-- most comparisons are neutral;
-- 106 of 160 comparisons are classified as neutral;
-- seven comparisons significantly favor Standard;
-- GSK obtains the most consistent benefit while using the smallest explanatory-budget fraction;
-- BA and jSO consume a larger explanatory-budget fraction without comparable returns.
-
-These results support the transfer of the host-receptivity concept from the synthetic benchmark to the applied problem.
-
----
-
-## Applicability frontier
-
-X-Opt Oracle is most useful when three conditions coincide:
-
-1. The host exposes parameters with sufficient runtime plasticity.
-2. The stagnation signal reflects a recoverable loss of search productivity.
-3. Feasibility management does not dominate the optimization difficulty.
-
-When these conditions do not hold, the intervention may be neutral or may interfere with the host dynamics.
-
-Planned extensions include:
-
-- component-wise ablation;
-- abstention-capable intervention;
-- adaptive explainer selection;
-- constraint-aware triggering;
-- problem-specific intervention adapters.
-
----
-
-## Repository structure
+## Pseudocódigo completo
 
 ```text
-.
-├── CEC2022 Oficial Format/
-│   └── Results exported in the official IEEE CEC 2022 format
-│
-├── datos_principal/
-│   └── Main benchmark campaign:
-│       per-run logs, FE ledger, interventions, and aggregated results
-│
-├── datos_aplicado/
-│   └── Applied EV charging-hub campaign:
-│       scenarios, per-run outputs, and statistical summaries
-│
-├── paquetes_repositorio/
-│   └── Packaged source-code and verification artifacts
-│
-├── scripts/
-│   ├── config.py
-│   │   └── Global experimental and supervisory configuration
-│   │
-│   ├── budget.py
-│   │   └── Strict FE ledger and budget-accounting utilities
-│   │
-│   ├── cec2022_protocol.py
-│   │   └── CEC 2022 dimensions, budgets, targets, and stopping rules
-│   │
-│   ├── engines.py
-│   │   └── Host optimizers, actionable parameters, bounds, and adapters
-│   │
-│   ├── explainers.py
-│   │   └── SHAP-CF, LIME-CF, ACME-CF, and iBreakdown-CF
-│   │
-│   ├── trajectory.py
-│   │   └── Retrospective anchors, search history, and telemetry support
-│   │
-│   ├── utils.py
-│   │   └── Shared utilities, validation, serialization, and seed handling
-│   │
-│   ├── analyze_main_campaign.py
-│   │   └── Statistical analysis of the formal CEC 2022 campaign
-│   │
-│   ├── ev_problem_rwcmop.py
-│   │   └── Applied constrained optimization problem definition
-│   │
-│   ├── run_rwcmop_real.py
-│   │   └── Execution entry point for the applied campaign
-│   │
-│   ├── analyze_rwcmop.py
-│   │   └── Applied-campaign statistical analysis
-│   │
-│   └── plotter_rwcmop.py
-│       └── Applied-campaign figures and visual summaries
-│
-├── CITATION.cff
-│   └── Machine-readable citation metadata
-│
-├── LICENSE
-│   └── MIT license for the software
-│
-├── LICENSE-DATA
-│   └── Recommended CC BY 4.0 notice for published datasets
-│
-└── README.md
-    └── Project overview and reproducibility documentation
+ENTRADA: anfitrión A, función objetivo f, presupuesto MaxFEs,
+         explicador v ∈ {SHAP, LIME, ACME, iBreakdown},
+         parámetros accionables Θ con límites [Lj, Uj]
+
+Inicializar población P0, fitness F0, parámetros basales Θ0
+Inicializar ledger B: FE_opt = FE_exp = FE_dir = FE_cf = 0
+Inicializar historial retrospectivo W_hist, cooldown t_cd = 0
+
+MIENTRAS FE_tot(B) < MaxFEs:
+    SI |f(x_best) − f*| < 1e−8:                # parada oficial CEC
+        registrar(ObjetivoAlcanzado); ROMPER
+
+    # ---- SUPERVISOR X-OPT (Algoritmo 1) ----
+    SI I_stag(t) = 1 Y v ≠ Standard:
+        {A_k} ← AnclasRetrospectivas(W_hist, K=3, C=20)
+        R ← Q_v(m) · Σ_k |A_k| · I_p · R_p     # pre-reserva
+        SI MaxFEs − FE_tot(B) < R:
+            registrar(OmitidoPorDisponibilidad)
+            cooldown ← W_cd / 3
+        SI NO:
+            Φ̄  ← Explicar_v(M, {A_k}, Θ_t)     # cada sonda carga FE_exp
+            d  ← InferirDirección(historial H)  # sin coste en FEs
+            Θcf ← Π_[L,U]( Θ_t + d·S·(|Φ̄|/Σ|Φ̄|)·(U−L) )
+            AplicarIntervención(Θcf)            # override persistente
+            cooldown ← W_cd
+            registrar(FE_exp, Φ̄, Θ_t, Θcf, σ²(P_t))
+            programar auditoría en t + W_post
+
+    # ---- CICLO BASAL DEL ANFITRIÓN ----
+    generar una generación con operadores nativos de A usando Θ_t
+    evaluar candidatos y cargar como FE_opt
+    actualizar población, fitness, x_best y parámetros activos
+    registrar diversidad σ²(P_t); guardar snapshot en W_hist
+    ejecutar auditorías post-hoc vencidas → {rescate | neutro | interferencia}
+
+    # ---- ADAPTADOR DE INTERVENCIÓN (si hay override activo) ----
+    SI anfitrión con memoria (L-SHADE, jSO):    # Algoritmo 3
+        proyectar Θcf sobre parámetros activos compatibles
+        PRESERVAR memorias M_F, M_CR, archivo externo y reglas endógenas
+        si hay reemplazos exitosos → la memoria se actualiza con la
+        política propia del anfitrión
+    SI NO (PSO, BA, GWO, GSK, OPA, SBOA):       # Algoritmo 4
+        Θ_t ← Π_ΩΘ(Θcf)                         # override directo
+        vigente hasta nueva activación, objetivo o fin de presupuesto
+
+VERIFICAR: FE_opt + FE_exp + FE_dir + FE_cf = FE_tot ≤ MaxFEs   # aserción
+DEVOLVER x_best, ledger B, intervenciones y auditorías
 ```
 
-The LaTeX manuscript is maintained separately and is not distributed in this repository.
+---
+
+## Protocolo experimental
+
+| Elemento | Configuración |
+|---|---|
+| Suite | IEEE CEC 2022, F1–F12 (unimodal, multimodal, híbridas, composición) |
+| Dimensiones / presupuesto | $D=10$: $2\times10^5$ FEs · $D=20$: $10^6$ FEs |
+| Corridas | 30 por celda, semillas pareadas (CRN) Standard vs. asistidas |
+| Anfitriones | PSO, BA, GWO, L-SHADE, jSO, GSK, OPA, SBOA |
+| Variantes | Standard, SHAP-CF, LIME-CF, ACME-CF, iBreakdown-CF |
+| Métrica / éxito | $\|f(x_{best}) - f^*\|$ · umbral $10^{-8}$ |
+| Estadística | Wilcoxon pareado por celda + Holm + Friedman |
+| Supervisor | $W_{trig}=0{,}02$, $W_{cd}=0{,}01$, $W_{hist}=0{,}02$ (× MaxFEs), $S=0{,}1$, 1 CF por activación |
+
+**Parámetros accionables por anfitrión** (fuente de verdad: `engines.py`):
+
+| Anfitrión | Parámetros ($m$) | Canal |
+|---|---|---|
+| PSO | $w$, $c_1$, $c_2$, $v_{max}$ (4) | Override directo |
+| BA | $f_{min}$, $f_{max}$, loudness, pulse rate, $\alpha$, $\gamma$ (6) | Override directo |
+| GWO | $a_{scale}$, pesos de líder $\alpha/\beta/\delta$ (4) | Override directo |
+| GSK | $K_F$, $K_R$ (2) | Override directo |
+| OPA | drive, encircle, attack, explore prob (4) | Override directo |
+| SBOA | hunt, escape, explore prob, local (4) | Override directo |
+| L-SHADE | $F$, $CR$, pbest rate, archive rate (4) | Sensible a memoria ($M_F$, $M_{CR}$ preservadas) |
+| jSO | $F$, $CR$, pbest rate, archive rate (4) | Override restringido |
 
 ---
 
-## Citation
+## Resultados clave
 
-When using the software, experimental protocol, or results in academic work, please cite the repository and the associated research.
+**Selectividad, no mejora universal.** Sobre 96 celdas por dimensión (mejor variante vs. Standard, umbral ±5 % en mediana):
 
-The repository includes a machine-readable [`CITATION.cff`](CITATION.cff) file. When it is stored at the repository root on GitHub's default branch, GitHub displays a **Cite this repository** option with ready-to-copy citation formats.
+| | Mejora | Nula | Adversa |
+|---|---|---|---|
+| $D=10$ | 32 | 57 | 7 |
+| $D=20$ | 44 | 49 | 3 |
 
-A provisional citation is:
+- **Núcleo receptivo**: SBOA, GSK y BA (Friedman significativo en ambas dimensiones para SBOA y GSK).
+- **Frontera**: jSO — mejoras locales amortiguadas por su auto-adaptación.
+- **Neutros / resistentes**: PSO, L-SHADE, OPA. **Interferencia puntual**: GWO.
+- **Explicadores**: ACME-CF obtiene el mejor rango promedio global (1.65) en anfitriones receptivos; SHAP, LIME e iBreakdown dominan combinaciones específicas.
+- **Formas del rescate**: desplazamiento completo de la distribución (SBOA–F1), compresión de mediana e IQR en órdenes de magnitud (BA–F3), aumento de la probabilidad de éxito (GSK–F1, $D=20$: 17/30 corridas exitosas con LIME-CF vs. 1/30 en Standard), reducción amplia sin alcanzar el umbral (jSO–F6).
 
-> Olivares, P., and Olivares, R. (2026). *X-Opt Oracle: An XAI-counterfactual supervisory framework for dynamic parameter control in global optimization*. Universidad de Valparaíso.
+**Traslado aplicado** — hub de carga de vehículos eléctricos ($D=96$, 24 h multiperiodo, BESS + diésel + límites de red, penalización $f + \rho \cdot CV$ con $\rho = 10^6$; 10 escenarios × 4 anfitriones × 5 variantes × 30 corridas = 6 000 ejecuciones):
 
-Before publishing the repository, update `CITATION.cff` with:
+- Comparación primaria preregistrada **GSK–ACME-CF**: significativa tras Holm en los **10/10 escenarios**, ganancia pareada mediana +0,310 % (rango +0,075 % a +0,887 %), robusta distributivamente.
+- Fuera de ese par, el panorama es mayoritariamente neutro (106/160 comparaciones); 7 favorecen significativamente a Standard.
+- La jerarquía de receptividad del benchmark **predice el comportamiento aplicado**, validando el diseño en embudo. El anfitrión que captura beneficio (GSK) es también el que menos presupuesto explicativo consume (0,4–2,2 %), mientras BA y jSO gastan 8–13 % sin retorno.
 
-- the final repository URL;
-- the authors' ORCID identifiers, when available;
-- the software release version;
-- a persistent DOI, when available;
-- the final article metadata after publication.
-
----
-
-## License
-
-### Software
-
-The source code in `scripts/` is distributed under the [MIT License](LICENSE).
-
-The MIT License permits use, copying, modification, distribution, sublicensing, and commercial reuse, provided that the copyright notice and permission notice are retained.
-
-### Experimental data
-
-Unless a dataset directory states otherwise, the experimental outputs are intended for release under the Creative Commons Attribution 4.0 International License.
-
-A separate `LICENSE-DATA` file should be included in the repository root to make the data license explicit.
-
-### Manuscript and figures
-
-The LaTeX manuscript and publication-ready figures are not part of this repository. Their copyright remains reserved until the corresponding publication and reuse terms are established.
+**Frontera de aplicabilidad**: el estancamiento del objetivo es señal de intervención suficiente solo cuando la factibilidad no domina la dificultad del problema. Trabajo futuro: ablación por componente, controlador con capacidad de abstención y políticas adaptativas de selección del explicador.
 
 ---
 
-## Reproducibility requirements
+## Estructura del repositorio
 
-A faithful replication should preserve:
+```
+.
+├── CEC2022 Oficial Format/     # resultados en el formato oficial de la
+│                               # competencia IEEE CEC 2022, por anfitrión
+├── datos_principal/            # campaña benchmark: logs por corrida, ledger
+│                               # de FEs, intervenciones y tablas agregadas
+├── datos_aplicado/             # campaña del caso aplicado (hub de carga EV,
+│                               # 10 escenarios x 4 anfitriones x 5 variantes)
+├── paquetes_repositorio/       # paquetes y artefactos de verificación
+├── scripts/                    # código Python: motores de los 8 anfitriones,
+│                               # oráculo, ledger, gate, explicadores XAI-CF,
+│                               # síntesis contrafactual y análisis estadístico
+├── ESTADO_PROYECTO.md
+└── README.md
+```
 
-- paired seeds between Standard and assisted variants;
-- the strict function-evaluation ledger;
-- the FE Availability Gate;
-- the official termination criterion;
-- the distinction between host and explanatory evaluations;
-- the same actionable parameter bounds;
-- the same retrospective-anchor policy;
-- the same statistical correction procedure.
+El manuscrito LaTeX se mantiene en un proyecto separado y no se
+distribuye en este repositorio.
+---
 
-Changing any of these components modifies the experimental protocol and should be reported explicitly.
+## Referencia
+
+Si utilizas este trabajo:
+
+> Olivares, P., Olivares, R. *Marco de trabajo para aproximación de parámetros basado en modelos agnósticos explicables para algoritmos de Optimización Global* (X-Opt Oracle). Universidad de Valparaíso, 2026.## Licencias
+
+- **Código** (`scripts/`): [MIT](LICENSE). Uso, modificación y redistribución libres con atribución — el estándar para investigación reproducible.
+- **Datos experimentales** (`CEC2022 Oficial Format/`, `datos_principal/`, `datos_aplicado/`): [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.es). Pueden reutilizarse citando la fuente, que es la licencia habitual para datos de investigación.
+- El manuscrito y sus figuras **no forman parte de este repositorio**; todos los derechos sobre ellos quedan reservados hasta la publicación del artículo.
+
+Para citar este trabajo, GitHub genera la cita automáticamente desde [`CITATION.cff`](CITATION.cff) (botón *"Cite this repository"* en la barra lateral del repo).
+
+# X-Opt Oracle
+
+**Marco de trabajo supervisor XAI-contrafactual para el ajuste dinámico de parámetros en algoritmos de optimización global.**
+
+Pablo Olivares, Rodrigo Olivares — Escuela de Ingeniería Informática, Universidad de Valparaíso, Chile.
+
+---
+
+## Resumen
+
+Las metaheurísticas poblacionales suelen estancarse en óptimos locales sin mecanismos que expliquen por qué ocurre ni que orienten su recuperación. **X-Opt Oracle** es una capa supervisora desacoplada que monitorea al algoritmo anfitrión y, ante una señal de estancamiento, ejecuta una secuencia diagnóstica-prescriptiva:
+
+1. Construye un **oráculo empírico pagado** $\mathcal{M}(\Theta)$ que re-simula horizontes cortos de búsqueda, cargando cada evaluación al mismo presupuesto global.
+2. Estima la **importancia de los parámetros accionables** mediante un explicador XAI intercambiable (SHAP, LIME, ACME o iBreakdown).
+3. Sintetiza una **reconfiguración contrafactual determinista** y la aplica como override persistente.
+4. **Audita** el efecto posterior (rescate, neutralidad o interferencia).
+
+Todo el proceso opera bajo un **ledger estricto de evaluaciones** con pre-reserva presupuestaria: ninguna mejora proviene de evaluaciones ocultas.
+
+El hallazgo central es que la asistencia XAI-CF **no produce mejoras universales, sino beneficios selectivos** determinados por la *plasticidad paramétrica* del anfitrión: SBOA, GSK y BA son receptivos; los mecanismos auto-adaptativos de L-SHADE y jSO amortiguan la intervención; PSO permanece neutro; GWO y OPA delimitan la zona de interferencia. ACME-CF es el explicador con mejor rango global entre los anfitriones receptivos. En el traslado aplicado (planificación de un hub de carga de vehículos eléctricos), GSK–ACME-CF supera estadísticamente a Standard en los diez escenarios evaluados, con mejoras de magnitud moderada.
+
+---
+
+## Contribuciones
+
+- La explicabilidad deja de ser inspección post-hoc y se convierte en **componente operativo de control de lazo cerrado**.
+- Arquitectura **agnóstica al explicador y al anfitrión**: 8 metaheurísticas × 4 explicadores bajo la misma contabilidad.
+- **Auditabilidad formal**: ledger con invariante de suma exacta (Proposición 1) y cota de actividad del oráculo (Proposición 2).
+- Caracterización empírica de la **frontera de aplicabilidad**: cuándo la intervención rescata, cuándo es neutra y cuándo interfiere.
+
+---
+
+## Matemáticas del oráculo
+
+### Problema y estancamiento
+
+Optimización global continua sobre $\Omega = \prod_{j=1}^{D}[L_j, U_j]$:
+
+$$\min_{x \in \Omega} f(x)$$
+
+Sea $\tau^\star(t)$ la última evaluación con mejora relativa del incumbente superior a $\delta = 10^{-8}$ (considerando solo evaluaciones del optimizador). El disparador de estancamiento es:
+
+$$
+I_{stag}(t) =
+\begin{cases}
+1 & \text{si } t - \tau^\star(t) \ge W_{trig} \ \wedge \ t \ge t_{cd} \\
+0 & \text{en otro caso}
+\end{cases}
+\qquad W_{trig} = \lceil 0{,}02 \cdot MaxFEs \rceil
+$$
+
+con cooldown $W_{cd} = \lceil 0{,}01 \cdot MaxFEs \rceil$ tras intervenir ($W_{cd}/3$ tras un intento bloqueado). La diversidad poblacional se registra como telemetría:
+
+$$\sigma^2(P_t) = \frac{1}{N \cdot D} \sum_{i=1}^{N} \sum_{j=1}^{D} (x_{i,j} - \bar{x}_j)^2$$
+
+### Ledger estricto y gate de disponibilidad
+
+Toda evaluación real se imputa a una de cuatro categorías:
+
+$$FE^{tot}(t) = FE^{opt}(t) + FE^{exp}(t) + FE^{dir}(t) + FE^{cf}(t) \le MaxFEs$$
+
+(en la implementación evaluada $FE^{dir} = FE^{cf} = 0$; la dirección se infiere sin coste desde el historial). Antes de activar el explicador $v$ sobre $m$ parámetros, el gate exige la pre-reserva:
+
+$$MaxFEs - FE^{tot}(t) \ \ge\ R_v(m) = Q_v(m) \cdot P$$
+
+**Proposición 1 (seguridad presupuestaria).** Bajo el ledger con pre-reserva, toda corrida satisface $FE^{tot} \le MaxFEs$ y la suma de categorías coincide exactamente con $FE^{tot}$ (verificado con aserción al cierre de cada corrida).
+
+### Oráculo empírico pagado
+
+Dada una configuración candidata $\Theta$, el oráculo re-simula $I_p$ iteraciones del anfitrión sobre $K$ anclas retrospectivas $\{A_k\}$ y reporta la mediana del mejor valor alcanzado:
+
+$$\mathcal{M}(\Theta) = \underset{k=1..K,\ r=1..R_p}{\mathrm{med}} \ J(\mathcal{A}, \Theta, I_p;\ A_k, \zeta_{k,r})$$
+
+Coste por consulta: $P = \sum_k |A_k| \cdot I_p \cdot R_p \le K \cdot C \cdot I_p \cdot R_p$. Con $K=3$, $C=20$, $I_p = R_p = 1$: **$P \le 60$ FEs por consulta**. Las semillas $\zeta_{k,r}$ se fijan entre candidatos (*Common Random Numbers*), reduciendo la varianza de las comparaciones:
+
+$$\mathrm{Var}(\mathcal{M}(\Theta) - \mathcal{M}(\Theta')) = \mathrm{Var}(\mathcal{M}(\Theta)) + \mathrm{Var}(\mathcal{M}(\Theta')) - 2\,\mathrm{Cov}(\mathcal{M}(\Theta), \mathcal{M}(\Theta'))$$
+
+El predictor está memoizado: consultas repetidas no se recargan.
+
+### Estimación de importancia (explicadores XAI-CF)
+
+Los cuatro explicadores operan sobre el mismo $\mathcal{M}$ y producen $\bar{\Phi} = \{\phi_1, \dots, \phi_m\}$:
+
+| Explicador | Forma | Cota de consultas $Q_v(m)$ |
+|---|---|---|
+| SHAP-CF | $\phi_j = \sum_{S \subseteq F \setminus \{j\}} \frac{\|S\|!\,(m-\|S\|-1)!}{m!} [\mathcal{M}(S \cup \{j\}) - \mathcal{M}(S)]$ | $\lfloor Q_{shap}/(m{+}1) \rfloor (m{+}1)$ |
+| LIME-CF | $g^\* = \arg\min_{g} \sum_z \pi_\Theta(z)(\mathcal{M}(z) - g(z))^2 + \Omega(g)$ | $\max(m{+}2, Q_{lime})$ |
+| ACME-CF | $\phi_j = \frac{1}{K}\sum_k \frac{\|\mathcal{M}(\Theta_{-j}, \theta_j + \Delta_j; A_k) - \mathcal{M}(\Theta; A_k)\|}{\|\Delta_j\| + \varepsilon}$ | $1 + g\,m$ |
+| iBreakdown-CF | $\phi_{\pi_j} = \mathcal{M}(\Theta_{S_j}) - \mathcal{M}(\Theta_{S_{j-1}})$ | $1 + m' + \min(\pi, \binom{m'}{2})$ |
+
+Hiperparámetros de penalización: $Q_{shap}=16$, $Q_{lime}=12$, $g=3$, $\pi=4$, $m' = \min(m, 6)$. Peor caso por activación: 1140 FEs (BA con ACME-CF), es decir 0,57 % de $MaxFEs$ en $D=10$ y 0,114 % en $D=20$.
+
+### Síntesis contrafactual determinista
+
+La formulación contrafactual clásica restringida al espacio factible sería:
+
+$$\Theta^{cf} = \arg\min_{\Theta' \in \Omega_\Theta} \left[ \mathcal{M}(\Theta') + \lambda \lVert \Theta' - \Theta_t \rVert_1 \right]$$
+
+Para evitar esa optimización interna costosa, X-Opt la reemplaza por una prescripción determinista, acotada y sin FEs adicionales:
+
+$$\theta_j^{cf} = \Pi_{[L_j, U_j]}\!\left( \theta_j + d_j \cdot S \cdot \frac{|\phi_j|}{\sum_k |\phi_k|} \cdot (U_j - L_j) \right)$$
+
+donde $\Pi$ proyecta al intervalo permitido, $d_j \in \{-1, +1\}$ es la dirección (inferida desde configuraciones exitosas recientes, con fallback determinista) y $S = 0{,}1$ la intensidad máxima. **El explicador decide qué mover; el contrafactual decide cuánto y hacia dónde.**
+
+### Cotas de actividad y complejidad
+
+**Proposición 2.** El número de activaciones por corrida satisface $A \le \lceil MaxFEs / W_{cd} \rceil$ (= 100 con $W_{cd} = 0{,}01 \cdot MaxFEs$) y la fracción de presupuesto del oráculo cumple $FE^{exp}/MaxFEs \le A \cdot \max_v R_v(m) / MaxFEs$.
+
+Tiempo total de una corrida asistida:
+
+$$T = O(MaxFEs \cdot (D + c_f)) \cdot \left(1 + O\!\left(\tfrac{A \cdot R_v(m)}{MaxFEs}\right)\right)$$
+
+La asistencia no altera la clase asintótica del anfitrión; añade un factor multiplicativo acotado. Memoria: buffer de $B = 64$ instantáneas, $O(B \cdot N \cdot D)$; la huella conserva el orden $O(N \cdot D)$ del anfitrión.
+
+---
+
+## Pseudocódigo completo
+
+```text
+ENTRADA: anfitrión A, función objetivo f, presupuesto MaxFEs,
+         explicador v ∈ {SHAP, LIME, ACME, iBreakdown},
+         parámetros accionables Θ con límites [Lj, Uj]
+
+Inicializar población P0, fitness F0, parámetros basales Θ0
+Inicializar ledger B: FE_opt = FE_exp = FE_dir = FE_cf = 0
+Inicializar historial retrospectivo W_hist, cooldown t_cd = 0
+
+MIENTRAS FE_tot(B) < MaxFEs:
+    SI |f(x_best) − f*| < 1e−8:                # parada oficial CEC
+        registrar(ObjetivoAlcanzado); ROMPER
+
+    # ---- SUPERVISOR X-OPT (Algoritmo 1) ----
+    SI I_stag(t) = 1 Y v ≠ Standard:
+        {A_k} ← AnclasRetrospectivas(W_hist, K=3, C=20)
+        R ← Q_v(m) · Σ_k |A_k| · I_p · R_p     # pre-reserva
+        SI MaxFEs − FE_tot(B) < R:
+            registrar(OmitidoPorDisponibilidad)
+            cooldown ← W_cd / 3
+        SI NO:
+            Φ̄  ← Explicar_v(M, {A_k}, Θ_t)     # cada sonda carga FE_exp
+            d  ← InferirDirección(historial H)  # sin coste en FEs
+            Θcf ← Π_[L,U]( Θ_t + d·S·(|Φ̄|/Σ|Φ̄|)·(U−L) )
+            AplicarIntervención(Θcf)            # override persistente
+            cooldown ← W_cd
+            registrar(FE_exp, Φ̄, Θ_t, Θcf, σ²(P_t))
+            programar auditoría en t + W_post
+
+    # ---- CICLO BASAL DEL ANFITRIÓN ----
+    generar una generación con operadores nativos de A usando Θ_t
+    evaluar candidatos y cargar como FE_opt
+    actualizar población, fitness, x_best y parámetros activos
+    registrar diversidad σ²(P_t); guardar snapshot en W_hist
+    ejecutar auditorías post-hoc vencidas → {rescate | neutro | interferencia}
+
+    # ---- ADAPTADOR DE INTERVENCIÓN (si hay override activo) ----
+    SI anfitrión con memoria (L-SHADE, jSO):    # Algoritmo 3
+        proyectar Θcf sobre parámetros activos compatibles
+        PRESERVAR memorias M_F, M_CR, archivo externo y reglas endógenas
+        si hay reemplazos exitosos → la memoria se actualiza con la
+        política propia del anfitrión
+    SI NO (PSO, BA, GWO, GSK, OPA, SBOA):       # Algoritmo 4
+        Θ_t ← Π_ΩΘ(Θcf)                         # override directo
+        vigente hasta nueva activación, objetivo o fin de presupuesto
+
+VERIFICAR: FE_opt + FE_exp + FE_dir + FE_cf = FE_tot ≤ MaxFEs   # aserción
+DEVOLVER x_best, ledger B, intervenciones y auditorías
+```
+
+---
+
+## Protocolo experimental
+
+| Elemento | Configuración |
+|---|---|
+| Suite | IEEE CEC 2022, F1–F12 (unimodal, multimodal, híbridas, composición) |
+| Dimensiones / presupuesto | $D=10$: $2\times10^5$ FEs · $D=20$: $10^6$ FEs |
+| Corridas | 30 por celda, semillas pareadas (CRN) Standard vs. asistidas |
+| Anfitriones | PSO, BA, GWO, L-SHADE, jSO, GSK, OPA, SBOA |
+| Variantes | Standard, SHAP-CF, LIME-CF, ACME-CF, iBreakdown-CF |
+| Métrica / éxito | $\|f(x_{best}) - f^*\|$ · umbral $10^{-8}$ |
+| Estadística | Wilcoxon pareado por celda + Holm + Friedman |
+| Supervisor | $W_{trig}=0{,}02$, $W_{cd}=0{,}01$, $W_{hist}=0{,}02$ (× MaxFEs), $S=0{,}1$, 1 CF por activación |
+
+**Parámetros accionables por anfitrión** (fuente de verdad: `engines.py`):
+
+| Anfitrión | Parámetros ($m$) | Canal |
+|---|---|---|
+| PSO | $w$, $c_1$, $c_2$, $v_{max}$ (4) | Override directo |
+| BA | $f_{min}$, $f_{max}$, loudness, pulse rate, $\alpha$, $\gamma$ (6) | Override directo |
+| GWO | $a_{scale}$, pesos de líder $\alpha/\beta/\delta$ (4) | Override directo |
+| GSK | $K_F$, $K_R$ (2) | Override directo |
+| OPA | drive, encircle, attack, explore prob (4) | Override directo |
+| SBOA | hunt, escape, explore prob, local (4) | Override directo |
+| L-SHADE | $F$, $CR$, pbest rate, archive rate (4) | Sensible a memoria ($M_F$, $M_{CR}$ preservadas) |
+| jSO | $F$, $CR$, pbest rate, archive rate (4) | Override restringido |
+
+---
+
+## Resultados clave
+
+**Selectividad, no mejora universal.** Sobre 96 celdas por dimensión (mejor variante vs. Standard, umbral ±5 % en mediana):
+
+| | Mejora | Nula | Adversa |
+|---|---|---|---|
+| $D=10$ | 32 | 57 | 7 |
+| $D=20$ | 44 | 49 | 3 |
+
+- **Núcleo receptivo**: SBOA, GSK y BA (Friedman significativo en ambas dimensiones para SBOA y GSK).
+- **Frontera**: jSO — mejoras locales amortiguadas por su auto-adaptación.
+- **Neutros / resistentes**: PSO, L-SHADE, OPA. **Interferencia puntual**: GWO.
+- **Explicadores**: ACME-CF obtiene el mejor rango promedio global (1.65) en anfitriones receptivos; SHAP, LIME e iBreakdown dominan combinaciones específicas.
+- **Formas del rescate**: desplazamiento completo de la distribución (SBOA–F1), compresión de mediana e IQR en órdenes de magnitud (BA–F3), aumento de la probabilidad de éxito (GSK–F1, $D=20$: 17/30 corridas exitosas con LIME-CF vs. 1/30 en Standard), reducción amplia sin alcanzar el umbral (jSO–F6).
+
+**Traslado aplicado** — hub de carga de vehículos eléctricos ($D=96$, 24 h multiperiodo, BESS + diésel + límites de red, penalización $f + \rho \cdot CV$ con $\rho = 10^6$; 10 escenarios × 4 anfitriones × 5 variantes × 30 corridas = 6 000 ejecuciones):
+
+- Comparación primaria preregistrada **GSK–ACME-CF**: significativa tras Holm en los **10/10 escenarios**, ganancia pareada mediana +0,310 % (rango +0,075 % a +0,887 %), robusta distributivamente.
+- Fuera de ese par, el panorama es mayoritariamente neutro (106/160 comparaciones); 7 favorecen significativamente a Standard.
+- La jerarquía de receptividad del benchmark **predice el comportamiento aplicado**, validando el diseño en embudo. El anfitrión que captura beneficio (GSK) es también el que menos presupuesto explicativo consume (0,4–2,2 %), mientras BA y jSO gastan 8–13 % sin retorno.
+
+**Frontera de aplicabilidad**: el estancamiento del objetivo es señal de intervención suficiente solo cuando la factibilidad no domina la dificultad del problema. Trabajo futuro: ablación por componente, controlador con capacidad de abstención y políticas adaptativas de selección del explicador.
+
+---
+
+## Estructura del repositorio
+
+```
+.
+├── CEC2022 Oficial Format/     # resultados en el formato oficial de la
+│                               # competencia IEEE CEC 2022, por anfitrión
+├── datos_principal/            # campaña benchmark: logs por corrida, ledger
+│                               # de FEs, intervenciones y tablas agregadas
+├── datos_aplicado/             # campaña del caso aplicado (hub de carga EV,
+│                               # 10 escenarios x 4 anfitriones x 5 variantes)
+├── paquetes_repositorio/       # paquetes y artefactos de verificación
+├── scripts/                    # código Python: motores de los 8 anfitriones,
+│                               # oráculo, ledger, gate, explicadores XAI-CF,
+│                               # síntesis contrafactual y análisis estadístico
+├── ESTADO_PROYECTO.md
+└── README.md
+```
+
+El manuscrito LaTeX se mantiene en un proyecto separado y no se
+distribuye en este repositorio.
+---
+
+## Referencia
+
+Si utilizas este trabajo:
+
+> Olivares, P., Olivares, R. *Marco de trabajo para aproximación de parámetros basado en modelos agnósticos explicables para algoritmos de Optimización Global* (X-Opt Oracle). Universidad de Valparaíso, 2026.
